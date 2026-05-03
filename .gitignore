@@ -8,7 +8,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
+test*
 # C extensions
 *.so
 
@@ -89,6 +89,9 @@ cmake-build-*/
 *.sublime-project
 *.sublime-workspace
 
+# --- Captcha Solver Module (Excluded from Git) ---
+captcha_solver/
+
 # --- OS Specific ---
 .DS_Store
 .DS_Store?
@@ -101,3 +104,6 @@ Desktop.ini
 
 # --- Jupyter Notebook ---
 .ipynb_checkpoints
+modelscope*
+*.pyc
+test_modelscope_captcha.py
