@@ -107,3 +107,5 @@ Desktop.ini
 modelscope*
 *.pyc
 test_modelscope_captcha.py
+
+.playwright-mcp
