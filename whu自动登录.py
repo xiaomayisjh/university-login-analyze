@@ -3,11 +3,14 @@ import requests
 from bs4 import BeautifulSoup
 import random
 import base64
+import re
+import time
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 import sys
 import os
 import json
+import hashlib
 from PIL import Image
 from io import BytesIO
 
@@ -33,167 +36,273 @@ class WHULogin:
         self.chars = 'ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678'
 
     def _rds(self, length):
-        """生成指定长度的随机字符串，用于构造加密向量和填充"""
         return ''.join(random.choice(self.chars) for _ in range(length))
 
     def _encrypt_password(self, pwd, salt):
-        """
-        使用提取出的盐(pwdDefaultEncryptSalt)和AES-CBC对密码进行混淆加密
-        JS原逻辑: _gas(_rds(64)+password, salt, _rds(16)) -> Base64
-        """
         data = (self._rds(64) + pwd).encode('utf-8')
         key = salt.encode('utf-8')
         iv = self._rds(16).encode('utf-8')
-        
+
         cipher = AES.new(key, AES.MODE_CBC, iv)
         ciphertext = cipher.encrypt(pad(data, AES.block_size))
         return base64.b64encode(ciphertext).decode('utf-8')
 
+    def _ajax_headers(self):
+        headers = self.headers.copy()
+        headers.update({
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'Referer': self.login_url,
+            'X-Requested-With': 'XMLHttpRequest',
+        })
+        return headers
+
+    def _form_payload(self, form):
+        data = {}
+        for input_tag in form.select('input'):
+            name = input_tag.get('name')
+            if not name:
+                continue
+            input_type = (input_tag.get('type') or '').lower()
+            if input_type in ('button', 'submit', 'reset', 'file'):
+                continue
+            if input_type in ('checkbox', 'radio') and not input_tag.has_attr('checked'):
+                continue
+            data[name] = input_tag.get('value', '')
+        return data
+
+    def _extract_var(self, html, name, default=''):
+        match = re.search(rf'var\s+{re.escape(name)}\s*=\s*[\"\']([^\"\']*)[\"\']', html)
+        return match.group(1) if match else default
+
+    def _warm_up_browser_state(self):
+        ajax_headers = self._ajax_headers()
+        try:
+            self.session.get('https://cas.whu.edu.cn/authserver/tenant/info', headers=ajax_headers, timeout=10)
+            fp_seed = '|'.join([
+                'Chrome',
+                'Windows',
+                self.username,
+                self.session.cookies.get('JSESSIONID', ''),
+                self.session.cookies.get('route', ''),
+            ])
+            bfp = hashlib.md5(fp_seed.encode('utf-8')).hexdigest().upper()
+            self.session.get(
+                'https://cas.whu.edu.cn/authserver/bfp/info',
+                headers=ajax_headers,
+                params={'bfp': bfp, '_': int(time.time() * 1000)},
+                timeout=10,
+            )
+        except Exception:
+            pass
+
+    def _check_need_captcha(self):
+        url = 'https://cas.whu.edu.cn/authserver/checkNeedCaptcha.htl'
+        res = self.session.get(
+            url,
+            headers=self._ajax_headers(),
+            params={'username': self.username},
+            timeout=10,
+        )
+        try:
+            return bool(res.json().get('isNeed'))
+        except Exception:
+            return 'true' in res.text.lower()
+
+    def _captcha_distance(self, distance_res):
+        if isinstance(distance_res, dict):
+            if 'x' in distance_res:
+                return float(distance_res['x'])
+            if distance_res.get('target'):
+                return float(distance_res['target'][0])
+        return float(distance_res)
+
+    def _make_tracks(self, distance):
+        distance = max(1, int(distance))
+        steps = max(8, min(28, distance // 6))
+        tracks = [{'a': 0, 'b': 0, 'c': 0}]
+        current = 0
+        for i in range(1, steps):
+            progress = i / steps
+            eased = 1 - pow(1 - progress, 3)
+            next_x = min(distance - 1, max(current + 1, int(distance * eased)))
+            if next_x <= current:
+                continue
+            y = random.choice([-2, -1, 0, 1, 2])
+            tracks.append({'a': next_x, 'b': y, 'c': random.randint(22, 58)})
+            current = next_x
+        tracks.append({'a': distance, 'b': random.choice([-1, 0, 1]), 'c': random.randint(35, 95)})
+        return tracks
+
+    def _verify_slider_captcha(self):
+        if not CaptchaSolver:
+            print('[-] 模块 CaptchaSolver 未正确导入，无法处理滑块验证。')
+            return False
+
+        print('[*] 发现【新版滑块验证码】，正在请求图片与识别...')
+        ajax_headers = self._ajax_headers()
+        try:
+            self.session.get('https://cas.whu.edu.cn/authserver/common/toSliderCaptcha.htl', headers=ajax_headers, timeout=10)
+            s_res = self.session.get(
+                'https://cas.whu.edu.cn/authserver/common/openSliderCaptcha.htl',
+                headers=ajax_headers,
+                params={'_': int(time.time() * 1000)},
+                timeout=15,
+            ).json()
+        except Exception as e:
+            print(f'[-] 获取滑块图片失败: {e}')
+            return False
+
+        try:
+            big_image = s_res.get('bigImage', '')
+            small_image = s_res.get('smallImage', '')
+            bg_data = base64.b64decode(big_image)
+            slide_data = base64.b64decode(small_image)
+            safe_secure = slide_data[-16:].decode('latin1')
+
+            bg_img = Image.open(BytesIO(bg_data))
+            natural_width = bg_img.width
+            canvas_length = 280
+
+            solver = CaptchaSolver()
+            distance_res = solver.solve_slide_captcha(bg_image_data=slide_data, slide_image_data=bg_data)
+            distance = self._captcha_distance(distance_res)
+            move_length = int(distance * (canvas_length / natural_width))
+            tracks = self._make_tracks(move_length)
+            verify_body = {
+                'canvasLength': canvas_length,
+                'moveLength': move_length,
+                'tracks': tracks,
+            }
+            sign_plain = json.dumps(verify_body, ensure_ascii=False, separators=(',', ':'))
+            sign = self._encrypt_password(sign_plain, safe_secure)
+
+            v_res = self.session.post(
+                'https://cas.whu.edu.cn/authserver/common/verifySliderCaptcha.htl',
+                headers=ajax_headers,
+                data={'sign': sign},
+                timeout=15,
+            ).json()
+
+            if v_res.get('errorCode') == 1:
+                print(f'[+] 滑块验证通过！moveLength={move_length}')
+                return True
+            print(f'[-] 滑块校验失败: {v_res}')
+            return False
+        except Exception as e:
+            print(f'[-] 滑块验证过程中报错: {e}')
+            return False
+
+    def _solve_image_captcha(self, data):
+        if not CaptchaSolver:
+            print('[-] 模块 CaptchaSolver 未正确导入，普通验证码无法验证。')
+            return False
+
+        try:
+            c_res = self.session.get(
+                'https://cas.whu.edu.cn/authserver/getCaptcha.htl',
+                headers=self._ajax_headers(),
+                params={'_': int(time.time() * 1000)},
+                timeout=10,
+            )
+            solver = CaptchaSolver()
+            c_text = solver.solve_image_captcha(image_data=c_res.content)
+            print(f'[+] 验证码识别处理结果: {c_text}')
+            data['captcha'] = c_text
+            return True
+        except Exception as e:
+            print(f'[-] 验证码模块调用报错: {e}')
+            return False
+
     def login(self):
         print(f"[*] 开始尝试以 {self.username} 登录 WHU...")
-        
-        # 1. 访问登录页面，获取Cookie及表单参数
-        print("[*] 正在打开登录界面获取Token与Salt流...")
+        print("[*] 正在打开新版登录界面获取表单与加密盐...")
+
         try:
-            res = self.session.get(self.login_url, headers=self.headers, timeout=10)
+            res = self.session.get(self.login_url, headers=self.headers, timeout=15)
+            res.encoding = res.apparent_encoding
             soup = BeautifulSoup(res.text, 'html.parser')
         except Exception as e:
             print(f"[-] 网站访问失败: {e}")
             return False
 
-        # 2. 提取隐藏的必要表单项 (确保只抓取casLoginForm里的数据以防干扰)
-        data = {}
-        form = soup.select_one('#casLoginForm')
+        form = soup.select_one('#pwdFromId')
         if not form:
-            print("[-] 未在页面中找到目标表单(casLoginForm)。请检查是否需要连接校园网或VPN。")
+            print("[-] 未在页面中找到新版账号密码表单(pwdFromId)。")
             return False
 
-        for input_tag in form.select('input[type="hidden"]'):
-            name = input_tag.get('name')
-            if name:
-                data[name] = input_tag.get('value', '')
-
-        # 3. 提取AES加密参数与验证码需要检测
-        # CAS 先检测是否需要滑块或普通验证码 needCaptcha.html
-        need_captcha_url = f'https://cas.whu.edu.cn/authserver/needCaptcha.html?username={self.username}&pwdEncrypt2=pwdEncryptSalt'
-        need_c_res = self.session.get(need_captcha_url, headers=self.headers).text
-        
-        salt_tag = soup.select_one('#pwdDefaultEncryptSalt')
-        salt = salt_tag['value'] if getattr(salt_tag, 'attrs', None) and 'value' in salt_tag.attrs else ''
-        
-        # update salt if provided via needCaptcha: "true::::some_salt"
-        if "::::" in need_c_res:
-            salt = need_c_res.split("::::")[1].strip()
-
+        data = self._form_payload(form)
+        salt_tag = form.select_one('#pwdEncryptSalt') or soup.select_one('#pwdEncryptSalt')
+        salt = salt_tag.get('value', '') if salt_tag else ''
         if not salt:
-            print("[-] 获取加密盐失败。")
+            print("[-] 获取新版加密盐(pwdEncryptSalt)失败。")
             return False
-            
-        print(f"[+] 成功提取加密参数 Salt: {salt}, Execution: {data.get('execution', '')}")
 
-        # 4. 构造基础登录请求包
-        data['username'] = self.username
-        data['password'] = self._encrypt_password(self.password, salt)
-        
-        is_slider_captcha = soup.select_one('#isSliderCaptcha')
-        is_slider_captcha = True if is_slider_captcha and is_slider_captcha.get('value') == 'true' else False
+        captcha_switch = self._extract_var(res.text, 'captchaSwitch', default='2')
+        data.update({
+            'username': self.username,
+            'password': self._encrypt_password(self.password, salt),
+            'cllt': 'userNameLogin',
+            'dllt': data.get('dllt', 'generalLogin'),
+            '_eventId': data.get('_eventId', 'submit'),
+            'lt': data.get('lt', ''),
+            'execution': data.get('execution', ''),
+        })
+        data.pop('passwordText', None)
+        data.pop('rememberMe', None)
 
-        # 5. 自动识别人机验证码(如果要)
-        if "true" in need_c_res:
-            if is_slider_captcha:
-                print("[*] 发现【滑块验证码】机制，正在请求图片与识别...")
-                slider_url = 'https://cas.whu.edu.cn/authserver/sliderCaptcha.do'
-                s_res = self.session.post(slider_url, headers=self.headers).json()
-                
-                bg_data = base64.b64decode(s_res.get('bigImage', ''))
-                slide_data = base64.b64decode(s_res.get('smallImage', ''))
-                
-                try:
-                    img = Image.open(BytesIO(bg_data))
-                    natural_width = img.width
-                    
-                    if CaptchaSolver:
-                        solver = CaptchaSolver()
-                        # 注意大小滑块反了的处理：滑块识别时需要 bg_image_data 为小图，slide_image_data 为大图 传递入内部
-                        distance_res = solver.solve_slide_captcha(bg_image_data=slide_data, slide_image_data=bg_data)
-                        
-                        if isinstance(distance_res, dict):
-                            distance = float(distance_res.get('x', distance_res.get('target', [0])[0]))
-                        else:
-                            distance = float(distance_res)
-                            
-                        # 进行针对280px画布的比例缩放运算
-                        canvas_length = 280
-                        scaled_distance = int(distance * (canvas_length / natural_width))
-                        
-                        # 验证滑块
-                        v_url = 'https://cas.whu.edu.cn/authserver/verifySliderImageCode.do'
-                        v_res = self.session.post(v_url, headers=self.headers, data={
-                            'canvasLength': canvas_length,
-                            'moveLength': scaled_distance
-                        }).json()
-                        
-                        if v_res.get('code') == 0:
-                            print(f"[+] 滑块验证通过！(Sign: {v_res.get('sign','')})")
-                            data['sign'] = v_res.get('sign')
-                        else:
-                            print(f"[-] 滑块校验失败: {v_res}")
-                    else:
-                        print("[-] 模块 CaptchaSolver 未正确导入，滑块无法验证被略过。")
-                except Exception as e:
-                    print(f"[-] 滑块验证过程中报错: {e}")
-            else:
-                captcha_img = soup.select_one('#captchaImg')
-                if captcha_img and captcha_img.get('src'):
-                    print("[*] 发现常规图片验证码(CaptchaImg)机制，正在尝试识别...")
-                    src = captcha_img.get('src')
-                    c_url = 'https://cas.whu.edu.cn' + src if src.startswith('/') else 'https://cas.whu.edu.cn/authserver/' + src
-                    c_res = self.session.get(c_url, headers=self.headers)
-                    if CaptchaSolver:
-                        try:
-                            solver = CaptchaSolver()
-                            c_text = solver.solve_image_captcha(image_data=c_res.content)
-                            print(f"[+] 验证码识别处理结果: {c_text}")
-                            data['captchaResponse'] = c_text
-                        except Exception as e:
-                            print(f"[-] 验证码模块调用报错: {e}")
-                            data['captchaResponse'] = 'ABCD'
-                    else:
-                        print("[-] 模块 CaptchaSolver 未正确导入。")
-                        data['captchaResponse'] = 'ABCD'
+        print(f"[+] 成功提取新版参数 Salt: {salt}, Execution: {data.get('execution', '')}, captchaSwitch={captcha_switch}")
+        self._warm_up_browser_state()
 
-        # 6. 发送登录请求包 (有可能会产生转跳/重定向)
-        print("[*] 正在发送登录认证POST请求包...")
         try:
-            res_post = self.session.post(self.login_url, data=data, headers=self.headers, allow_redirects=True, timeout=15)
+            need_captcha = self._check_need_captcha()
+        except Exception as e:
+            print(f"[-] 检测验证码需求失败: {e}")
+            return False
+
+        if need_captcha:
+            if captcha_switch == '2':
+                if not self._verify_slider_captcha():
+                    return False
+            else:
+                if not self._solve_image_captcha(data):
+                    return False
+
+        print("[*] 正在发送新版登录认证POST请求包...")
+        post_headers = self.headers.copy()
+        post_headers.update({
+            'Referer': self.login_url,
+            'Origin': 'https://cas.whu.edu.cn',
+        })
+        try:
+            res_post = self.session.post(self.login_url, data=data, headers=post_headers, allow_redirects=True, timeout=15)
+            res_post.encoding = res_post.apparent_encoding
         except Exception as e:
             print(f"[-] 发送POST请求失败: {e}")
             return False
 
-        # 7. 解析返回结果与可能遇到的转跳
         if 'dingxiang-inc.com' in res_post.text or '/whu_captcha_check_002/' in res_post.text:
-            print("[-] 触发了网关防御设施：顶象(DingXiang)访问风控拦截。当前IP需完成顶象验证方可继续传递登录请求。")
+            print("[-] 触发了额外访问校验，当前会话需要先完成页面端验证。")
             return False
 
         soup_post = BeautifulSoup(res_post.text, 'html.parser')
-        
-        error_span = soup_post.select_one('#usernameSpecificError') or soup_post.select_one('#passwordError') or soup_post.select_one('.auth_error')
+        error_span = (
+            soup_post.select_one('#usernameSpecificError')
+            or soup_post.select_one('#passwordError')
+            or soup_post.select_one('#showErrorTip')
+            or soup_post.select_one('.auth_error')
+        )
         if error_span and error_span.text.strip():
             print(f"[-] 登录失败, CAS返回错误: {error_span.text.strip()}")
-            return False
-            
-        auth_error = soup_post.find('span', id='showErrorTip')
-        if auth_error and auth_error.text.strip():
-            print(f"[-] 认证失败提示: {auth_error.text.strip()}")
             return False
 
         if "温馨提示" in res_post.text or "个人中心" in res_post.text or "cas.whu.edu.cn" not in res_post.url:
             print("[+] 登录成功！已成功转跳并获取身份凭证。")
             print(f"[*] 当前所处URL: {res_post.url}")
             return True
-        else:
-            print("[-] 登录并未按预期跳转，请确认账号密码信息，或检查是否有进一步的行为验证阻挡。")
-            return False
+
+        print("[-] 登录并未按预期跳转，请确认账号密码信息，或检查是否有进一步的行为验证阻挡。")
+        print(f"[*] 当前所处URL: {res_post.url}")
+        return False
 
 if __name__ == '__main__':
     whu_login = WHULogin('testuser1234@test.com', 'Test123pwd')
