@@ -19,9 +19,10 @@
 
 ## 🚀 核心功能
 
-- **🎯 多校覆盖**：已完成清华大学 (THU)、复旦大学 (Fudan)、山东大学 (SDU)、西安交通大学 (XJTU)、四川大学 (SCU) 等多校登录适配。
+- **🎯 多校覆盖**：已完成华中科技大学 (HUST)、清华大学 (THU)、复旦大学 (Fudan)、山东大学 (SDU)、西安交通大学 (XJTU)、四川大学 (SCU) 等多校登录适配。
 - **🧩 验证码识别**：共享 `captcha_solver` 全部使用 [AntiCAP API](https://anticap.314521.xyz/docs) 识别文字验证码与滑块双图；保留现有脚本的调用接口。
 - **🔐 加密解析**：完整解析登录过程中的 RSA、AES 加密逻辑及动态参数（如 `execution`, `lt` 等）的提取。
+- **🖼️ 动图验证码处理**：HUST 验证码逐帧解码、动态干扰抑制、二值化和放大后再交给共享 OCR 服务。
 - **🛠️ 模块化架构**：各校脚本解耦，具备高度的可扩展性与独立性。
 
 ---
@@ -31,6 +32,7 @@
 ```text
 university-login-analyze/
 ├── captcha_solver/          # 验证码识别模块
+├── hust自动登录.py       # 华中科技大学 CAS 登录协议脚本
 ├── tsinghua自动登录.py      # 清华大学登录分析脚本
 ├── fudan_sso自动登录.py     # 复旦大学登录分析脚本
 ├── sdu自动登录.py           # 山东大学登录分析脚本
@@ -85,6 +87,7 @@ ANTICAP_TIMEOUT=90
 - `from captcha_solver import CaptchaSolver, HybridCaptchaSolver` 与旧的 `captcha_solver.captcha_solver` 导入方式均受支持。
 - `solve_image_captcha(image_path=..., image_data=...)` 调用 `POST /api/v1/ocr`，返回去除首尾空白的文字。
 - `solve_slide_captcha(...)` 调用 `POST /api/v1/slider/match`，返回 `{"x": x1, "target": [x1, y1, x2, y2]}`。为兼容旧调用，`bg_image_*` 表示**滑块小图（target）**，`slide_image_*` 表示**背景大图（background）**。坐标是输入原图像素，武汉大学脚本的画布缩放逻辑保持不变。
+- 上传前会识别图片格式；AntiCAP 不接受但 Pillow 能读取的格式（例如成都大学返回的 GIF）会自动转换为 PNG，并保留首帧和图像尺寸。PNG、JPEG、WEBP、BMP 会直接上传。
 - 滑块接口需要双图；仅传 `full_image_data` 会明确报参数错误。单图本身不足以构造该 API 的匹配请求。
 - `HybridCaptchaSolver` 保留历史 `primary`、`fallback` 参数，但任何值都只使用 AntiCAP API，不再加载本地 AntiCAP 或其他识别服务。
 

@@ -3,11 +3,13 @@
 import base64
 import math
 import os
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import requests
 from dotenv import dotenv_values
+from PIL import Image
 
 
 DEFAULT_API_BASE_URL = "https://anticap.314521.xyz"
@@ -50,8 +52,33 @@ def _read_image_bytes(image_path=None, image_data=None):
     return bytes(data)
 
 
+def _to_api_supported_image(data):
+    """Transcode recognized formats that AntiCAP v1 does not accept.
+
+    Some campus captcha endpoints return GIF (the CDU endpoint does). The
+    AntiCAP contract accepts PNG, JPEG, WEBP and BMP, so preserve supported
+    bytes and convert other valid Pillow images to a first-frame PNG. Unknown
+    bytes are left untouched so the server can return its normal contract
+    error instead of changing the legacy client's behavior for test doubles.
+    """
+    try:
+        with Image.open(BytesIO(data)) as image:
+            if image.format in {"PNG", "JPEG", "WEBP", "BMP"}:
+                return data
+            has_alpha = image.mode in {"RGBA", "LA"} or "transparency" in image.info
+            converted = image.convert("RGBA" if has_alpha else "RGB")
+            output = BytesIO()
+            converted.save(output, format="PNG", optimize=True)
+            normalized = output.getvalue()
+    except (OSError, ValueError):
+        return data
+    if len(normalized) > MAX_IMAGE_BYTES:
+        raise ValueError("Converted captcha image exceeds the 5 MiB API limit")
+    return normalized
+
+
 def _image_to_base64(image_path=None, image_data=None):
-    return base64.b64encode(_read_image_bytes(image_path, image_data)).decode("ascii")
+    return base64.b64encode(_to_api_supported_image(_read_image_bytes(image_path, image_data))).decode("ascii")
 
 
 def _normalize_api_base_url(value):

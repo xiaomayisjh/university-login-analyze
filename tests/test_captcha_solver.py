@@ -1,4 +1,5 @@
 import base64
+from io import BytesIO
 import importlib
 import os
 from pathlib import Path
@@ -7,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 import requests
+from PIL import Image
 
 from captcha_solver.captcha_solver import CaptchaSolver, HybridCaptchaSolver
 
@@ -84,6 +86,18 @@ class CaptchaSolverApiTests(unittest.TestCase):
         self.assertEqual(call["timeout"], 37)
         self.assertFalse(call["allow_redirects"])
         self.assertEqual(solver.last_meta["request_id"], "ocr-123")
+
+    def test_gif_captcha_is_transcoded_to_api_supported_png(self):
+        buffer = BytesIO()
+        Image.new("RGB", (3, 2), (240, 80, 40)).save(buffer, format="GIF")
+        solver, session = self.make_solver()
+
+        solver.solve_image_captcha(image_data=buffer.getvalue())
+
+        uploaded = base64.b64decode(session.calls[0]["json"]["img_base64"])
+        with Image.open(BytesIO(uploaded)) as image:
+            self.assertEqual(image.format, "PNG")
+            self.assertEqual(image.size, (3, 2))
 
     def test_ocr_reads_an_image_path(self):
         image_path = self.temp_path / "captcha.png"
