@@ -12,9 +12,7 @@ It reproduces the browser login flow with HTTP requests only:
 from __future__ import annotations
 
 import argparse
-import os
 import re
-import sys
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -26,11 +24,6 @@ from bs4 import BeautifulSoup
 
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-CAPTCHA_DIR = os.path.join(CURRENT_DIR, "captcha_solver")
-if CAPTCHA_DIR not in sys.path:
-    sys.path.insert(0, CAPTCHA_DIR)
 
 try:
     from captcha_solver import CaptchaSolver

@@ -8,7 +8,6 @@
 __pycache__/
 *.py[cod]
 *$py.class
-test*
 # C extensions
 *.so
 
@@ -58,6 +57,7 @@ pip-delete-this-directory.txt
 .env
 .env.local
 .env.*
+!.env.example
 *.secret
 *.key
 *.pem
@@ -89,8 +89,8 @@ cmake-build-*/
 *.sublime-project
 *.sublime-workspace
 
-# --- Captcha Solver Module (Excluded from Git) ---
-captcha_solver/
+# --- Captcha Solver ---
+# Track the shared API client; credentials stay in the ignored project .env.
 
 # --- OS Specific ---
 .DS_Store

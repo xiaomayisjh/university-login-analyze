@@ -24,7 +24,7 @@ def nau_auto_login(username, password):
     """
     完成南京审计大学教务系统(https://jwc.nau.edu.cn/)自动登录流程：
     1. 访问验证码接口获取验证码图片，并获得ASP.NET_SessionId cookie。
-    2. 利用本地 CaptchaSolver 识别验证码。
+    2. 利用 AntiCAP API 识别验证码。
     3. 根据前端JS逻辑生成加密登录参数(para)。
     4. 发送登录POST请求并解析返回结果。
     """

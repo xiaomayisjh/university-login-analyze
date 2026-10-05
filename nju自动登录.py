@@ -65,7 +65,7 @@ def login_nju(username, password):
     })
     
     login_url = "https://authserver.nju.edu.cn/authserver/login"
-    solver = HybridCaptchaSolver(primary='modelscope', fallback=True)
+    solver = HybridCaptchaSolver(primary='anticap', fallback=False)
     max_retries = 5
     
     for attempt in range(max_retries):

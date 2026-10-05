@@ -27,7 +27,7 @@ def scu_auto_login(username, password):
     """
     完成四川大学教务系统自动登录流程：
     1. 访问登录主页获取会话级 tokenValue。
-    2. 加载图像验证码并利用本地 CaptchaSolver 识别。
+    2. 加载图像验证码并利用 AntiCAP API 识别。
     3. Python 还原特定的密码 MD5 拼串逻辑。
     4. 带有必要的参数发起最终的登录请求。
     """

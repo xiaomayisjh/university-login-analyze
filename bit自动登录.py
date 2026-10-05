@@ -40,7 +40,7 @@ class BITSSOLogin:
         }
         
         # 验证码识别器
-        self.captcha_solver = HybridCaptchaSolver(primary='server', fallback=True)
+        self.captcha_solver = HybridCaptchaSolver(primary='anticap', fallback=False)
     
     def get_random_headers(self):
         """获取随机headers"""
